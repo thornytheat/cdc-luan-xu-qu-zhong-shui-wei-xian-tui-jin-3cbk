@@ -13,8 +13,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field
 
-from . import archive, runner, schema_gate, settings, snapshot, store
+from . import archive, patch_runner, patch_store, runner, schema_gate, settings, snapshot, store
 from .archive import EventError
+from .patch_engine import PatchError, parse_patch_event
 
 BASE_DIR = settings.BASE_DIR
 
@@ -23,6 +24,7 @@ BASE_DIR = settings.BASE_DIR
 async def lifespan(app: FastAPI):
     conn = store.connect()
     store.init_db(conn)
+    patch_store.init_patch_tables(conn)
     if store.total_events(conn) == 0:
         store.seed_sample(conn)
     conn.close()
@@ -48,15 +50,31 @@ def render(request: Request, template: str, **ctx) -> HTMLResponse:
         "verdict_labels": settings.VERDICT_LABELS,
         "change_labels": settings.CHANGE_LABELS,
         "op_labels": settings.OP_LABELS,
+        "field_decision_labels": patch_runner_label_map(),
+        "change_status_labels": patch_status_label_map(),
+        "patch_sources": settings.PATCH_SOURCES,
         "nav": ctx.pop("nav", ""),
     }
     context.update(ctx)
     return templates.TemplateResponse(request, template, context)
 
 
+def patch_runner_label_map() -> dict:
+    from .patch_engine import FIELD_DECISION_LABELS
+
+    return FIELD_DECISION_LABELS
+
+
+def patch_status_label_map() -> dict:
+    from .patch_changes import CHANGE_STATUS_LABELS
+
+    return CHANGE_STATUS_LABELS
+
+
 def with_conn():
     conn = store.connect()
     store.init_db(conn)
+    patch_store.init_patch_tables(conn)
     return conn
 
 
@@ -73,6 +91,7 @@ def health():
             "events": store.total_events(conn),
             "runs": store.run_count(conn),
             "seed_version": store.get_meta(conn, "seed_version"),
+            "pipeline": patch_store.patch_counts(conn),
         }
     finally:
         conn.close()
@@ -366,3 +385,195 @@ def api_schema(version: int):
     if version not in (1, 2):
         raise HTTPException(status_code=400, detail="schema 版本只支持 1 或 2")
     return schema_gate.load_schema(settings.SCHEMAS_DIR / f"v{version}.json")
+
+
+# ===========================================================================
+# 补丁流水线：字段级合并 + 跨表原子发布
+# ===========================================================================
+
+
+class IngestItem(BaseModel):
+    table: str
+    pk: str
+    version: int = Field(ge=1)
+    ts: str
+    op: str
+    after: dict = Field(default_factory=dict)
+    change_id: str | None = None
+    source: str = "api-inline.jsonl"
+    line_no: int | None = None
+
+
+class IngestRequest(BaseModel):
+    events: list[IngestItem] = Field(default_factory=list)
+    manifests: list[dict] = Field(default_factory=list)
+    auto_publish: bool = True
+    fail_after_line: int | None = Field(default=None, ge=1)
+
+
+class AdjudicateRequest(BaseModel):
+    item_id: str
+    choose: str = Field(description="kept 保留先到值 / incoming 采用后到值")
+    note: str | None = None
+
+
+class PublishRequest(BaseModel):
+    change_id: str
+
+
+class SeedPatchRequest(BaseModel):
+    auto_publish: bool = True
+    fail_after_line: int | None = Field(default=None, ge=1)
+
+
+def _patch_error(exc: PatchError) -> HTTPException:
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/pipeline", response_class=HTMLResponse)
+def pipeline_page(request: Request):
+    conn = with_conn()
+    try:
+        view = patch_runner.pipeline_view(conn)
+        manifest_doc = None
+        if settings.PATCH_MANIFEST.exists():
+            import json as _json
+
+            manifest_doc = _json.loads(settings.PATCH_MANIFEST.read_text(encoding="utf-8"))
+    finally:
+        conn.close()
+    return render(
+        request,
+        "pipeline.html",
+        page="pipeline",
+        nav="pipeline",
+        view=view,
+        manifest_doc=manifest_doc,
+    )
+
+
+@app.post("/api/pipeline/seed")
+def api_pipeline_seed(payload: SeedPatchRequest | None = None):
+    """幂等导入样例补丁（15 条 / 3 个来源库 / 4 个业务变更）。"""
+    payload = payload or SeedPatchRequest()
+    conn = with_conn()
+    try:
+        try:
+            result = patch_runner.seed_sample_patches(
+                conn,
+                auto_publish=payload.auto_publish,
+                fail_after_line=payload.fail_after_line,
+            )
+        except PatchError as exc:
+            # fail_after_line 故障注入：已回滚且检查点可续跑
+            view = patch_runner.pipeline_view(conn)
+            return JSONResponse(
+                status_code=409,
+                content={"detail": str(exc), "retryable": True, "view": view},
+            )
+        result["counts"] = patch_store.patch_counts(conn)
+        result["view"] = patch_runner.pipeline_view(conn)
+        return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/pipeline/reset")
+def api_pipeline_reset(payload: dict | None = None):
+    """清空补丁流水线全部状态（演示重放）；旧 CDC events/runs 不受影响。"""
+    conn = with_conn()
+    try:
+        patch_store.reset_pipeline(conn)
+        return {"reset": True, "counts": patch_store.patch_counts(conn)}
+    finally:
+        conn.close()
+
+
+@app.post("/api/pipeline/ingest")
+def api_pipeline_ingest(payload: IngestRequest):
+    """摄入一组补丁事件；自动按检查点续跑，ready 变更在单事务内原子发布。"""
+    from .patch_changes import ChangeSpec
+
+    conn = with_conn()
+    try:
+        try:
+            events = []
+            used_lines: dict[str, int] = {}
+            for index, item in enumerate(payload.events, start=1):
+                line_no = item.line_no or used_lines.get(item.source, 0) + 1
+                used_lines[item.source] = max(used_lines.get(item.source, 0), line_no)
+                obj = item.model_dump(exclude={"source", "line_no"})
+                events.append(parse_patch_event(obj, item.source, line_no, index))
+        except PatchError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        manifests = {
+            spec["change_id"]: ChangeSpec(
+                change_id=spec["change_id"],
+                expected_tables=list(spec["expected_tables"]),
+                label=spec.get("label", ""),
+            )
+            for spec in payload.manifests
+        }
+        try:
+            result = patch_runner.ingest_events(
+                conn,
+                events,
+                manifests=manifests,
+                auto_publish=payload.auto_publish,
+                fail_after_line=payload.fail_after_line,
+            )
+        except PatchError as exc:
+            # 故障注入/处理失败：409 表示已回滚但检查点可续跑，附带当前视图便于页面刷新
+            view = patch_runner.pipeline_view(conn)
+            return JSONResponse(
+                status_code=409,
+                content={"detail": str(exc), "retryable": True, "view": view},
+            )
+        result["counts"] = patch_store.patch_counts(conn)
+        result["view"] = patch_runner.pipeline_view(conn)
+        return result
+    finally:
+        conn.close()
+
+
+@app.post("/api/pipeline/adjudicate")
+def api_pipeline_adjudicate(payload: AdjudicateRequest):
+    conn = with_conn()
+    try:
+        result = patch_runner.adjudicate(conn, payload.item_id, payload.choose, payload.note)
+        result["view"] = patch_runner.pipeline_view(conn)
+        return result
+    except PatchError as exc:
+        raise _patch_error(exc) from exc
+    finally:
+        conn.close()
+
+
+@app.post("/api/pipeline/publish")
+def api_pipeline_publish(payload: PublishRequest):
+    conn = with_conn()
+    try:
+        entry = patch_runner.publish_change(conn, payload.change_id)
+        return {"entry": entry, "view": patch_runner.pipeline_view(conn)}
+    except PatchError as exc:
+        raise _patch_error(exc) from exc
+    finally:
+        conn.close()
+
+
+@app.get("/api/pipeline/view")
+def api_pipeline_view():
+    conn = with_conn()
+    try:
+        return patch_runner.pipeline_view(conn)
+    finally:
+        conn.close()
+
+
+@app.get("/api/pipeline/publishes")
+def api_pipeline_publishes(limit: int = Query(default=50, ge=1, le=200)):
+    conn = with_conn()
+    try:
+        return {"publishes": patch_store.list_publish_log(conn, limit=limit)}
+    finally:
+        conn.close()

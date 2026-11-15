@@ -1,0 +1,6 @@
+{"table": "inventory", "pk": "I7007", "version": 1, "ts": "2026-11-15T09:12:00Z", "op": "c", "after": {"sku": "SKU-7007", "warehouse": "WH-SH-01", "on_hand": 300, "reserved": 10, "updated_at": "2026-11-15T09:12:00Z"}, "change_id": null}
+{"table": "inventory", "pk": "I7007", "version": 2, "ts": "2026-11-15T09:14:00Z", "op": "u", "after": {"on_hand": 280, "updated_at": "2026-11-15T09:14:00Z"}, "change_id": null}
+{"table": "inventory", "pk": "I7007", "version": 3, "ts": "2026-11-15T09:17:00Z", "op": "d", "after": {}, "change_id": "CHG-20261115-04"}
+{"table": "inventory", "pk": "I7007", "version": 2, "ts": "2026-11-15T09:13:00Z", "op": "u", "after": {"on_hand": 260, "updated_at": "2026-11-15T09:13:00Z"}, "change_id": null}
+{"table": "inventory", "pk": "I7007", "version": 4, "ts": "2026-11-15T09:25:00Z", "op": "c", "after": {"sku": "SKU-7007", "warehouse": "WH-BJ-02", "on_hand": 120, "reserved": 0, "updated_at": "2026-11-15T09:25:00Z"}, "change_id": "CHG-20261115-04"}
+{"table": "inventory", "pk": "I7008", "version": 1, "ts": "2026-11-15T09:26:00Z", "op": "c", "after": {"sku": "SKU-7008", "warehouse": "WH-GZ-03", "on_hand": 540, "reserved": 3, "updated_at": "2026-11-15T09:26:00Z"}, "change_id": null}

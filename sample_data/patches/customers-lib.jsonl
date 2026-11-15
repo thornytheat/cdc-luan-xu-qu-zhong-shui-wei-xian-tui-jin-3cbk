@@ -1,0 +1,3 @@
+{"table": "customers", "pk": "C7001", "version": 1, "ts": "2026-11-15T09:11:00Z", "op": "c", "after": {"customer_id": "C7001", "name": "周婷", "email": "c7001@example.com", "tier": "gold", "updated_at": "2026-11-15T09:11:00Z"}, "change_id": null}
+{"table": "customers", "pk": "C7001", "version": 2, "ts": "2026-11-15T09:15:00Z", "op": "u", "after": {"tier": "platinum", "updated_at": "2026-11-15T09:15:00Z"}, "change_id": "CHG-20261115-01"}
+{"table": "customers", "pk": "C7009", "version": 1, "ts": "2026-11-15T09:22:00Z", "op": "c", "after": {"customer_id": "C7009", "name": "吴迪", "email": "c7009@example.com", "tier": "silver", "updated_at": "2026-11-15T09:22:00Z"}, "change_id": null}

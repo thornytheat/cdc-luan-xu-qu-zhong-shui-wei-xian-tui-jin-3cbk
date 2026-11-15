@@ -230,3 +230,116 @@
     }
   });
 })();
+
+// --- 补丁流水线：种子/重置/故障注入/裁决/发布（全部 JSON 驱动，动作后整页刷新取服务端口径） ---
+(function () {
+  if (!window.__pipeline) return;
+  var errBox = qs('#pipeline-error');
+  var noticeBox = qs('#pipeline-notice');
+
+  function flash(box, msg) {
+    box.hidden = false;
+    box.textContent = msg;
+    setTimeout(function () { box.hidden = true; }, 6000);
+  }
+
+  async function call(url, payload, opts) {
+    opts = opts || {};
+    var res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload || {})
+    });
+    var data = null;
+    try { data = await res.json(); } catch (e) { data = { detail: '响应不是 JSON' }; }
+    if (!res.ok) {
+      var msg = (data && data.detail) || ('请求失败：' + res.status);
+      if (opts.allowConflict && res.status === 409) return data;
+      throw new Error(typeof msg === 'string' ? msg : JSON.stringify(msg));
+    }
+    return data;
+  }
+
+  function reloadSoon(delay) {
+    setTimeout(function () { window.location.reload(); }, delay || 700);
+  }
+
+  var seedBtn = qs('#btn-seed');
+  if (seedBtn) {
+    seedBtn.addEventListener('click', async function () {
+      seedBtn.disabled = true;
+      try {
+        var data = await call('/api/pipeline/seed', {});
+        flash(noticeBox, '样例补丁已幂等导入：新增 ' + data.archive.inserted +
+          ' 条，跳过已归档 ' + data.archive.skipped + ' 条；本轮发布 ' +
+          (data.publishes || []).length + ' 个变更。');
+        reloadSoon();
+      } catch (err) {
+        flash(errBox, '导入失败：' + err.message);
+        seedBtn.disabled = false;
+      }
+    });
+  }
+
+  var resetBtn = qs('#btn-reset');
+  if (resetBtn) {
+    resetBtn.addEventListener('click', async function () {
+      if (!window.confirm('清空补丁流水线的暂存/现网/台账/检查点？（旧 CDC 合并数据不受影响）')) return;
+      await call('/api/pipeline/reset', {});
+      reloadSoon(200);
+    });
+  }
+
+  // 故障注入：种子数据跑到 orders-lib 第 3 行后中断 → 再点种子从检查点续跑
+  var failBtn = qs('#btn-fail-demo');
+  if (failBtn) {
+    failBtn.addEventListener('click', async function () {
+      failBtn.disabled = true;
+      try {
+        var first = await call('/api/pipeline/reset', {});
+        var failed = await call('/api/pipeline/seed', { fail_after_line: 3 }, { allowConflict: true });
+        flash(noticeBox, '已注入故障：' + (failed.detail || '处理中断') +
+          '。现网保留上一版；再点「重放样例补丁」即从检查点续跑，不重复处理已确认事件。');
+        reloadSoon(1200);
+      } catch (err) {
+        flash(errBox, '故障演示失败：' + err.message);
+        failBtn.disabled = false;
+      }
+    });
+  }
+
+  qsa('.js-adj').forEach(function (button) {
+    button.addEventListener('click', async function () {
+      var note = window.prompt('裁决备注（可留空）', '');
+      if (note === null) return;
+      try {
+        var data = await call('/api/pipeline/adjudicate', {
+          item_id: button.getAttribute('data-item'),
+          choose: button.getAttribute('data-choose'),
+          note: note || null
+        });
+        var published = (data.publishes || []).length;
+        flash(noticeBox, '裁决已落库（' + data.adjudication.status + '）' +
+          (published ? '；相关变更已补发布 ' + published + ' 个。' : '；变更闸门已重新评估。'));
+        reloadSoon();
+      } catch (err) {
+        flash(errBox, '裁决失败：' + err.message);
+      }
+    });
+  });
+
+  qsa('.js-publish').forEach(function (button) {
+    button.addEventListener('click', async function () {
+      try {
+        var data = await call('/api/pipeline/publish', {
+          change_id: button.getAttribute('data-change')
+        });
+        flash(noticeBox, '变更 ' + data.entry.change_id + ' 已在单事务内原子切换现网（发布号 ' +
+          data.entry.publish_id + '）。');
+        reloadSoon();
+      } catch (err) {
+        flash(errBox, '发布失败：' + err.message);
+      }
+    });
+  });
+})();

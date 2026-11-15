@@ -1,0 +1,33 @@
+{
+  "changes": [
+    {
+      "change_id": "CHG-20261115-01",
+      "label": "大促下单状态与客户等级联动",
+      "expected_tables": [
+        "orders",
+        "customers"
+      ]
+    },
+    {
+      "change_id": "CHG-20261115-02",
+      "label": "订单金额重算（两库口径不同，需裁决）",
+      "expected_tables": [
+        "orders"
+      ]
+    },
+    {
+      "change_id": "CHG-20261115-03",
+      "label": "订单履约状态更新",
+      "expected_tables": [
+        "orders"
+      ]
+    },
+    {
+      "change_id": "CHG-20261115-04",
+      "label": "库存键删除后重建",
+      "expected_tables": [
+        "inventory"
+      ]
+    }
+  ]
+}

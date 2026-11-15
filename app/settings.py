@@ -4,14 +4,17 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-APP_NAME = "cdcwater · CDC 乱序去重与水位线推进"
+APP_NAME = "cdcwater · CDC 乱序去重与字段级原子发布"
 APP_SHORT = "cdcwater"
 BASE_DIR = Path(__file__).resolve().parent.parent
 SAMPLE_DIR = BASE_DIR / "sample_data"
 EVENTS_DIR = SAMPLE_DIR / "events"
 SCHEMAS_DIR = SAMPLE_DIR / "schemas"
+PATCH_DIR = SAMPLE_DIR / "patches"
+PATCH_MANIFEST = PATCH_DIR / "manifest.json"
 DATA_DIR = Path(os.environ.get("CDCWATER_DATA_DIR", str(BASE_DIR / "data")))
 SEED_VERSION = "seed-2026-11-10.1"
+PATCH_SEED_VERSION = "patch-seed-2026-11-15.1"
 
 TABLES = [
     {
@@ -55,6 +58,13 @@ VERDICT_LABELS = {
     "compatible_with_backfill": "放行+回填",
     "blocked": "阻断",
 }
+
+# 补丁流水线：来源库 → 样例文件
+PATCH_SOURCES = [
+    {"source": "orders-lib.jsonl", "table": "orders", "label": "订单库补丁 orders-lib"},
+    {"source": "customers-lib.jsonl", "table": "customers", "label": "客户库补丁 customers-lib"},
+    {"source": "inventory-lib.jsonl", "table": "inventory", "label": "库存库补丁 inventory-lib"},
+]
 
 CHANGE_LABELS = {
     "removed_column": "删除列",
